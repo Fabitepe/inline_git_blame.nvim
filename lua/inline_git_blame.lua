@@ -7,6 +7,18 @@ local defaults = {
 	you_label = "You", -- or false to disable replacement
 }
 
+local function get_git_repo_root(file)
+    local path = vim.fn.fnamemodify(file, ":p:h")
+    local handle = io.popen('git -C ' .. path .. ' rev-parse --show-toplevel 2>/dev/null')
+    if not handle then return vim.fn.getcwd() end
+    local repo_root = handle:read("*a")
+    handle:close()
+    if repo_root and repo_root ~= "" then
+        return vim.fn.trim(repo_root)
+    end
+    return vim.fn.getcwd()
+end
+
 local function append_excluded_filetypes(opts)
 	opts = opts or {}
 	local result = vim.deepcopy(defaults.excluded_filetypes)
@@ -113,14 +125,12 @@ local function relative_time(author_time)
 	end
 end
 
-local function is_git_ignored()
-	local file = vim.api.nvim_buf_get_name(0)
+local function is_git_ignored(file, git_root)
 	if file == "" then
 		return false
 	end
-	local root = vim.fn.getcwd()
 	local relfile = vim.fn.fnamemodify(file, ":.")
-	local handle = io.popen(string.format('git -C "%s" check-ignore "%s"', root, relfile))
+	local handle = io.popen(string.format('git -C "%s" check-ignore "%s"', git_root, relfile))
 	if not handle then
 		return false
 	end
@@ -142,8 +152,8 @@ local function is_excluded()
 	return false
 end
 
-local function is_in_git_repo(file)
-    local handle = io.popen('git rev-parse --show-toplevel 2>/dev/null')
+local function is_in_git_repo(file, git_root)
+    local handle = io.popen('git -C ' .. git_root .. ' rev-parse --show-toplevel 2>/dev/null')
     if not handle then return false end
     local repo_root = handle:read("*a")
     handle:close()
@@ -155,10 +165,9 @@ local function is_in_git_repo(file)
     return file:sub(1, #repo_root) == repo_root
 end
 
-local function is_blamable()
+local function is_blamable(file, git_root)
     local bt = vim.api.nvim_get_option_value("buftype", { buf = 0 })
-    local file = vim.api.nvim_buf_get_name(0)
-    if bt ~= "" or file == "" or not is_in_git_repo(file) or is_git_ignored() then
+    if bt ~= "" or file == "" or not is_in_git_repo(file, git_root) or is_git_ignored(file, git_root) then
         return false
     end
     return not is_excluded()
@@ -204,7 +213,14 @@ local function handle_blame_output(bufnr, line, root, sha, author, author_time)
 end
 
 function M.inline_blame_current_line()
-	if not is_blamable() then
+    local file = vim.api.nvim_buf_get_name(0)
+	if file == "" then
+		return false
+	end
+    local root = get_git_repo_root(file)
+    local relfile = vim.fn.fnamemodify(file, ":p"):sub(#root + 2)
+
+	if not is_blamable(file, root) then
 		return false
 	end
 	M.clear_blame()
@@ -214,12 +230,6 @@ function M.inline_blame_current_line()
 		return true
 	end
 
-	local file = vim.api.nvim_buf_get_name(0)
-	if file == "" then
-		return false
-	end
-	local root = vim.fn.getcwd()
-	local relfile = vim.fn.fnamemodify(file, ":.")
 	local blame_cmd = { "git", "-C", root, "blame", "--porcelain", "-L", line .. "," .. line, relfile }
 	vim.fn.jobstart(blame_cmd, {
 		stdout_buffered = true,
